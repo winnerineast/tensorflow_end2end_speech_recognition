@@ -5,32 +5,37 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from experiments.utils.data.sparsetensor import list2sparsetensor
-from experiments.utils.data.labels.phone import num2phone, phone2num
-from experiments.utils.data.inputs.splicing import do_image_splice
-from input_pipeline.feature_extraction import wav2feature
+from utils.io.inputs.splicing import do_splice
+from utils.io.inputs.frame_stacking import stack_frame
+
+from utils.io.inputs.feature_extraction import wav2feature
+from utils.io.labels.phone import Phone2idx
+
+SPACE = '_'
+SOS = '<'
+EOS = '>'
 
 
 def _read_text(text_path):
     """Read char-level transcripts.
     Args:
-        text_path: path to a transcript text file
+        text_path (string): path to a transcript text file
     Returns:
-        transcript: a text of transcript
+        transcript (string): a text of transcript
     """
     # Read ground truth labels
     with open(text_path, 'r') as f:
         line = f.readlines()[-1]
-        transcript = ' '.join(line.strip().lower().split(' ')[2:])
+        transcript = SPACE.join(line.strip().lower().split(' ')[2:])
     return transcript
 
 
 def _read_phone(text_path):
     """Read phone-level transcripts.
     Args:
-        text_path: path to a transcript text file
+        text_path (string): path to a transcript text file
     Returns:
-        transcript: a text of transcript
+        transcript (string): a text of transcript
     """
     # Read ground truth labels
     phone_list = []
@@ -42,11 +47,14 @@ def _read_phone(text_path):
     return transcript
 
 
-def generate_data(label_type, model, batch_size=1):
+def generate_data(label_type, model, batch_size=1, num_stack=1, splice=1):
     """
     Args:
-        label_type: character or phone or multitask
-        model: ctc or attention
+        label_type (string): character or phone or multitask
+        model (string): ctc or attention or joint_ctc_attention
+        batch_size (int, optional): the size of mini-batch
+        num_stack (int, optional) the number of frames to stack
+        splice (int, optional): frames to splice. Default is 1 frame.
     Returns:
         inputs: `[B, T, input_size]`
         labels: `[B]`
@@ -57,67 +65,62 @@ def generate_data(label_type, model, batch_size=1):
     inputs, inputs_seq_len = wav2feature(
         ['./sample/LDC93S1.wav'] * batch_size,
         feature_type='logfbank', feature_dim=40,
-        energy=True, delta1=True, delta2=True)
+        energy=False, delta1=True, delta2=True)
 
-    ctc_phone_map_file_path = '../../experiments/timit/metrics/mapping_files/ctc/phone61_to_num.txt'
-    att_phone_map_file_path = '../../experiments/timit/metrics/mapping_files/attention/phone61_to_num.txt'
+    # Frame stacking
+    inputs = stack_frame(inputs,
+                         num_stack=num_stack,
+                         num_skip=num_stack,
+                         progressbar=False)
+    if num_stack != 1:
+        for i in range(len(inputs_seq_len)):
+            inputs_seq_len[i] = len(inputs[i])
 
+    # Splice
+    inputs = do_splice(inputs,
+                       splice=splice,
+                       batch_size=batch_size,
+                       num_stack=num_stack)
+
+    phone2idx = Phone2idx(map_file_path='./phone61.txt')
+
+    trans_char = _read_text('./sample/LDC93S1.txt')
+    trans_char = trans_char.replace('.', '')
+    trans_phone = _read_phone('./sample/LDC93S1.phn')
+
+    # Make transcripts
     if model == 'ctc':
         if label_type == 'character':
-            transcript = _read_text('./sample/LDC93S1.txt')
-            transcript = ' ' + transcript.replace('.', '') + ' '
-            labels = [alpha2num(transcript)] * batch_size
-
-            # Convert to SparseTensor
-            labels = list2sparsetensor(labels, padded_value=-1)
+            labels = [alpha2idx(trans_char)] * batch_size
             return inputs, labels, inputs_seq_len
 
         elif label_type == 'phone':
-            transcript = _read_phone('./sample/LDC93S1.phn')
-            labels = [
-                phone2num(transcript.split(' '), ctc_phone_map_file_path)] * batch_size
-
-            # Convert to SparseTensor
-            labels = list2sparsetensor(labels, padded_value=-1)
+            labels = [phone2idx(trans_phone.split(' '))] * batch_size
             return inputs, labels, inputs_seq_len
 
         elif label_type == 'multitask':
-            transcript_char = _read_text('./sample/LDC93S1.txt')
-            transcript_phone = _read_phone('./sample/LDC93S1.phn')
-            transcript_char = ' ' + transcript_char.replace('.', '') + ' '
-            labels_char = [alpha2num(transcript_char)] * batch_size
-            labels_phone = [
-                phone2num(transcript_phone.split(' '), ctc_phone_map_file_path)] * batch_size
-
-            # Convert to SparseTensor
-            labels_char = list2sparsetensor(labels_char, padded_value=-1)
-            labels_phone = list2sparsetensor(labels_phone, padded_value=-1)
+            labels_char = [alpha2idx(trans_char)] * batch_size
+            labels_phone = [phone2idx(trans_phone.split(' '))] * batch_size
             return inputs, labels_char, labels_phone, inputs_seq_len
 
     elif model == 'attention':
         if label_type == 'character':
-            transcript = _read_text('./sample/LDC93S1.txt')
-            transcript = '<' + transcript.replace('.', '') + '>'
-            labels = [alpha2num(transcript)] * batch_size
+            trans_char = SOS + trans_char + EOS
+            labels = [alpha2idx(trans_char)] * batch_size
             labels_seq_len = [len(labels[0])] * batch_size
             return inputs, labels, inputs_seq_len, labels_seq_len
 
         elif label_type == 'phone':
-            transcript = _read_phone('./sample/LDC93S1.phn')
-            transcript = '< ' + transcript + ' >'
-            labels = [phone2num(transcript.split(
-                ' '), att_phone_map_file_path)] * batch_size
+            trans_phone = SOS + ' ' + trans_phone + ' ' + EOS
+            labels = [phone2idx(trans_phone.split(' '))] * batch_size
             labels_seq_len = [len(labels[0])] * batch_size
             return inputs, labels, inputs_seq_len, labels_seq_len
 
         elif label_type == 'multitask':
-            transcript_char = _read_text('./sample/LDC93S1.txt')
-            transcript_phone = _read_phone('./sample/LDC93S1.phn')
-            transcript_char = '<' + transcript_char.replace('.', '') + '>'
-            transcript_phone = '< ' + transcript_phone + ' >'
-            labels_char = [alpha2num(transcript_char)] * batch_size
-            labels_phone = [
-                phone2num(transcript_phone.split(' '), att_phone_map_file_path)] * batch_size
+            trans_char = SOS + trans_char + EOS
+            trans_phone = SOS + ' ' + trans_phone + ' ' + EOS
+            labels_char = [alpha2idx(trans_char)] * batch_size
+            labels_phone = [phone2idx(trans_phone.split(' '))] * batch_size
             target_len_char = [len(labels_char[0])] * batch_size
             target_len_phone = [len(labels_phone[0])] * batch_size
             return (inputs, labels_char, labels_phone,
@@ -125,74 +128,57 @@ def generate_data(label_type, model, batch_size=1):
 
     elif model == 'joint_ctc_attention':
         if label_type == 'character':
-            transcript = _read_text('./sample/LDC93S1.txt')
-            att_transcript = '<' + transcript.replace('.', '') + '>'
-            ctc_transcript = ' ' + transcript.replace('.', '') + ' '
-            att_labels = [alpha2num(att_transcript)] * batch_size
+            att_trans_char = SOS + trans_char + EOS
+            att_labels = [alpha2idx(att_trans_char)] * batch_size
             labels_seq_len = [len(att_labels[0])] * batch_size
-            ctc_labels = [alpha2num(ctc_transcript)] * batch_size
-
-            # Convert to SparseTensor
-            ctc_labels = list2sparsetensor(ctc_labels, padded_value=-1)
-            return inputs, att_labels, inputs_seq_len, labels_seq_len, ctc_labels
-
+            ctc_labels = [alpha2idx(trans_char)] * batch_size
         elif label_type == 'phone':
-            transcript = _read_phone('./sample/LDC93S1.phn')
-            att_transcript = '< ' + transcript + ' >'
-            att_labels = [
-                phone2num(att_transcript.split(' '), att_phone_map_file_path)] * batch_size
+            att_trans_phone = SOS + ' ' + trans_phone + ' ' + EOS
+            att_labels = [phone2idx(att_trans_phone.split(' '))] * batch_size
             labels_seq_len = [len(att_labels[0])] * batch_size
-            ctc_labels = [
-                phone2num(transcript.split(' '), ctc_phone_map_file_path)] * batch_size
-
-            # Convert to SparseTensor
-            ctc_labels = list2sparsetensor(ctc_labels, padded_value=-1)
-
-            return inputs, att_labels, inputs_seq_len, labels_seq_len, ctc_labels
+            ctc_labels = [phone2idx(trans_phone.split(' '))] * batch_size
+        return inputs, att_labels, ctc_labels, inputs_seq_len, labels_seq_len
 
 
-def alpha2num(transcript):
+def alpha2idx(transcript):
     """Convert from alphabet to number.
     Args:
-        transcript: sequence of characters (string)
+        transcript (string): a sequence of characters
     Returns:
-        index_list: list of indices of alphabet (int)
+        index_list (list): indices of alphabets
     """
     char_list = list(transcript)
 
-    # 0 is reserved for space
-    space_index = 0
-    first_index = ord('a') - 1
+    first_index = ord('a')
     index_list = []
     for char in char_list:
-        if char == ' ':
-            index_list.append(space_index)
-        elif char == '<':
+        if char == SPACE:
             index_list.append(26)
-        elif char == '>':
+        elif char == SOS:
             index_list.append(27)
+        elif char == EOS:
+            index_list.append(28)
         else:
             index_list.append(ord(char) - first_index)
     return index_list
 
 
-def num2alpha(index_list):
+def idx2alpha(index_list):
     """Convert from number to alphabet.
     Args:
-        index_list: list of indices of alphabet (int)
+        index_list (list): indices of alphabets
     Returns:
-        transcript: sequence of character (string)
+        transcript (string): a sequence of characters
     """
-    # 0 is reserved to space
-    first_index = ord('a') - 1
+    first_index = ord('a')
     char_list = []
     for num in index_list:
-        if num == 0:
-            char_list.append(' ')
-        elif num == 26:
-            char_list.append('<')
+        if num == 26:
+            char_list.append(SPACE)
         elif num == 27:
-            char_list.append('>')
+            char_list.append(SOS)
+        elif num == 28:
+            char_list.append(EOS)
         else:
             char_list.append(chr(num + first_index))
     transcript = ''.join(char_list)

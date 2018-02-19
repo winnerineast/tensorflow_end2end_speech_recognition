@@ -5,108 +5,119 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import os
 import sys
 import time
 import tensorflow as tf
 # from tensorflow.python import debug as tf_debug
 
-sys.path.append('../../')
-from models.attention.blstm_attention_seq2seq import BLSTMAttetion
-from models.test.util import measure_time
-from models.test.data import generate_data, num2alpha, num2phone
-from experiments.utils.data.sparsetensor import list2sparsetensor
-from experiments.utils.parameter import count_total_parameters
-from experiments.utils.training.learning_rate_controller import Controller
+sys.path.append(os.path.abspath('../../'))
+from models.attention.attention_seq2seq import AttentionSeq2Seq
+from models.test.data import generate_data, idx2alpha
+from utils.io.labels.phone import Idx2phone
+from utils.io.labels.sparsetensor import list2sparsetensor
+from utils.parameter import count_total_parameters
+from utils.training.learning_rate_controller import Controller
+from utils.measure_time_func import measure_time
 
 
-class TestAttention(tf.test.TestCase):
+class TestAttentionTraining(tf.test.TestCase):
 
-    def test_attention(self):
+    def test(self):
         print("Attention Working check.")
-        self.check_training(attention_type='hybrid', label_type='phone')
-        self.check_training(attention_type='hybrid', label_type='character')
 
-        self.check_training(attention_type='location', label_type='phone')
-        self.check_training(attention_type='location', label_type='character')
+        # ok
+        # self.check(encoder_type='blstm',attention_type='dot_product')
+        # self.check(encoder_type='lstm', attention_type='dot_product')
+        # self.check(encoder_type='blstm', attention_type='bahdanau_content')
+        # self.check(encoder_type='lstm', attention_type='bahdanau_content')
+        # self.check(encoder_type='lstm', attention_type='luong_dot')
+        # self.check(encoder_type='blstm', attention_type='luong_general')
+        # self.check(encoder_type='lstm', attention_type='luong_general')
+        # self.check(encoder_type='blstm', attention_type='luong_concat')
+        # self.check(encoder_type='lstm', attention_type='luong_concat')
+        self.check(encoder_type='blstm', attention_type='hybrid')
+        # self.check(encoder_type='lstm', attention_type='hybrid')
+        # self.check(encoder_type='blstm', attention_type='location')
+        # self.check(encoder_type='lstm', attention_type='location')
 
-        self.check_training(attention_type='content', label_type='phone')
-        self.check_training(attention_type='content', label_type='character')
-
-        self.check_training(attention_type='layer_dot', label_type='phone')
-        self.check_training(attention_type='layer_dot', label_type='character')
+        # self.check(encoder_type='blstm',attention_type='normed_bahdanau_content')
+        # self.check(encoder_type='blstm',attention_type='scaled_luong_dot')
+        # self.check(encoder_type='blstm',attention_type='baidu_attetion')
 
     @measure_time
-    def check_training(self, attention_type, label_type):
+    def check(self, encoder_type, attention_type, label_type='character'):
 
-        print('----- attention_type: ' + attention_type + ', label_type: ' +
-              label_type + ' -----')
+        print('==================================================')
+        print('  encoder_type: %s' % encoder_type)
+        print('  attention_type: %s' % attention_type)
+        print('  label_type: %s' % label_type)
+        print('==================================================')
 
         tf.reset_default_graph()
         with tf.Graph().as_default():
             # Load batch data
-            batch_size = 1
+            batch_size = 4
             inputs, labels, inputs_seq_len, labels_seq_len = generate_data(
                 label_type=label_type,
                 model='attention',
                 batch_size=batch_size)
 
             # Define model graph
-            num_classes = 26 + 2 if label_type == 'character' else 61 + 2
-            # model = load(model_type=model_type)
-            network = BLSTMAttetion(input_size=inputs[0].shape[1],
-                                    encoder_num_unit=128,
-                                    encoder_num_layer=2,
-                                    attention_dim=64,
-                                    attention_type=attention_type,
-                                    decoder_num_unit=128,
-                                    decoder_num_layer=1,
-                                    embedding_dim=20,
-                                    num_classes=num_classes,
-                                    sos_index=num_classes - 2,
-                                    eos_index=num_classes - 1,
-                                    max_decode_length=50,
-                                    # attention_smoothing=True,
-                                    attention_weights_tempareture=0.5,
-                                    logits_tempareture=1.0,
-                                    parameter_init=0.1,
-                                    clip_grad=5.0,
-                                    clip_activation_encoder=50,
-                                    clip_activation_decoder=50,
-                                    dropout_ratio_input=0.9,
-                                    dropout_ratio_hidden=0.9,
-                                    dropout_ratio_output=1.0,
-                                    weight_decay=1e-8,
-                                    beam_width=1,
-                                    time_major=False)
+            num_classes = 27 if label_type == 'character' else 61
+            model = AttentionSeq2Seq(input_size=inputs[0].shape[1],
+                                     encoder_type=encoder_type,
+                                     encoder_num_units=256,
+                                     encoder_num_layers=2,
+                                     encoder_num_proj=None,
+                                     attention_type=attention_type,
+                                     attention_dim=128,
+                                     decoder_type='lstm',
+                                     decoder_num_units=256,
+                                     decoder_num_layers=1,
+                                     embedding_dim=64,
+                                     num_classes=num_classes,
+                                     sos_index=num_classes,
+                                     eos_index=num_classes + 1,
+                                     max_decode_length=100,
+                                     use_peephole=True,
+                                     splice=1,
+                                     parameter_init=0.1,
+                                     clip_grad_norm=5.0,
+                                     clip_activation_encoder=50,
+                                     clip_activation_decoder=50,
+                                     weight_decay=1e-8,
+                                     time_major=True,
+                                     sharpening_factor=1.0,
+                                     logits_temperature=1.0)
 
             # Define placeholders
-            network.create_placeholders()
+            model.create_placeholders()
             learning_rate_pl = tf.placeholder(tf.float32, name='learning_rate')
 
             # Add to the graph each operation
-            loss_op, logits, decoder_outputs_train, decoder_outputs_infer = network.compute_loss(
-                network.inputs_pl_list[0],
-                network.labels_pl_list[0],
-                network.inputs_seq_len_pl_list[0],
-                network.labels_seq_len_pl_list[0],
-                network.keep_prob_input_pl_list[0],
-                network.keep_prob_hidden_pl_list[0],
-                network.keep_prob_output_pl_list[0])
-            train_op = network.train(loss_op,
-                                     optimizer='adam',
-                                     learning_rate=learning_rate_pl)
-            decode_op_train, decode_op_infer = network.decoder(
-                decoder_outputs_train,
-                decoder_outputs_infer)
-            ler_op = network.compute_ler(network.labels_st_true_pl,
-                                         network.labels_st_pred_pl)
+            loss_op, logits, decoder_outputs_train, decoder_outputs_infer = model.compute_loss(
+                model.inputs_pl_list[0],
+                model.labels_pl_list[0],
+                model.inputs_seq_len_pl_list[0],
+                model.labels_seq_len_pl_list[0],
+                model.keep_prob_encoder_pl_list[0],
+                model.keep_prob_decoder_pl_list[0],
+                model.keep_prob_embedding_pl_list[0])
+            train_op = model.train(loss_op,
+                                   optimizer='adam',
+                                   learning_rate=learning_rate_pl)
+            decode_op_train, decode_op_infer = model.decode(
+                decoder_outputs_train, decoder_outputs_infer)
+            ler_op = model.compute_ler(model.labels_st_true_pl,
+                                       model.labels_st_pred_pl)
 
             # Define learning rate controller
             learning_rate = 1e-3
             lr_controller = Controller(learning_rate_init=learning_rate,
-                                       decay_start_epoch=10,
-                                       decay_rate=0.98,
-                                       decay_patient_epoch=5,
+                                       decay_start_epoch=20,
+                                       decay_rate=0.9,
+                                       decay_patient_epoch=10,
                                        lower_better=True)
 
             # Add the variable initializer operation
@@ -124,20 +135,19 @@ class TestAttention(tf.test.TestCase):
 
             # Make feed dict
             feed_dict = {
-                network.inputs_pl_list[0]: inputs,
-                network.labels_pl_list[0]: labels,
-                network.inputs_seq_len_pl_list[0]: inputs_seq_len,
-                network.labels_seq_len_pl_list[0]: labels_seq_len,
-                network.keep_prob_input_pl_list[0]: network.dropout_ratio_input,
-                network.keep_prob_hidden_pl_list[0]: network.dropout_ratio_hidden,
-                network.keep_prob_output_pl_list[0]: network.dropout_ratio_output,
+                model.inputs_pl_list[0]: inputs,
+                model.labels_pl_list[0]: labels,
+                model.inputs_seq_len_pl_list[0]: inputs_seq_len,
+                model.labels_seq_len_pl_list[0]: labels_seq_len,
+                model.keep_prob_encoder_pl_list[0]: 0.8,
+                model.keep_prob_decoder_pl_list[0]: 1.0,
+                model.keep_prob_embedding_pl_list[0]: 1.0,
                 learning_rate_pl: learning_rate
             }
 
-            map_file_path = '../../experiments/timit/metrics/mapping_files/attention/phone61_to_num.txt'
+            idx2phone = Idx2phone(map_file_path='./phone61.txt')
 
             with tf.Session() as sess:
-
                 # Initialize parameters
                 sess.run(init_op)
 
@@ -145,11 +155,8 @@ class TestAttention(tf.test.TestCase):
                 # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
                 # Train model
-                max_steps = 400
-                start_time_global = time.time()
+                max_steps = 1000
                 start_time_step = time.time()
-                ler_train_pre = 1
-                not_improved_count = 0
                 for step in range(max_steps):
 
                     # Compute loss
@@ -157,16 +164,16 @@ class TestAttention(tf.test.TestCase):
                         [train_op, loss_op], feed_dict=feed_dict)
 
                     # Gradient check
-                    # grads = sess.run(network.clipped_grads,
+                    # grads = sess.run(model.clipped_grads,
                     #                  feed_dict=feed_dict)
                     # for grad in grads:
                     #     print(np.max(grad))
 
                     if (step + 1) % 10 == 0:
                         # Change to evaluation mode
-                        feed_dict[network.keep_prob_input_pl_list[0]] = 1.0
-                        feed_dict[network.keep_prob_hidden_pl_list[0]] = 1.0
-                        feed_dict[network.keep_prob_output_pl_list[0]] = 1.0
+                        feed_dict[model.keep_prob_encoder_pl_list[0]] = 1.0
+                        feed_dict[model.keep_prob_decoder_pl_list[0]] = 1.0
+                        feed_dict[model.keep_prob_embedding_pl_list[0]] = 1.0
 
                         # Predict class ids
                         predicted_ids_train, predicted_ids_infer = sess.run(
@@ -176,47 +183,40 @@ class TestAttention(tf.test.TestCase):
                         # Compute accuracy
                         try:
                             feed_dict_ler = {
-                                network.labels_st_true_pl: list2sparsetensor(
-                                    labels,
-                                    padded_value=27),
-                                network.labels_st_pred_pl: list2sparsetensor(
-                                    predicted_ids_infer,
-                                    padded_value=27)
+                                model.labels_st_true_pl: list2sparsetensor(
+                                    labels, padded_value=model.eos_index),
+                                model.labels_st_pred_pl: list2sparsetensor(
+                                    predicted_ids_infer, padded_value=model.eos_index)
                             }
                             ler_train = sess.run(
                                 ler_op, feed_dict=feed_dict_ler)
-                        except ValueError:
+                        except IndexError:
                             ler_train = 1
 
                         duration_step = time.time() - start_time_step
-                        print('Step %d: loss = %.3f / ler = %.4f (%.3f sec) / lr = %.5f' %
+                        print('Step %d: loss = %.3f / ler = %.3f (%.3f sec) / lr = %.5f' %
                               (step + 1, loss_train, ler_train, duration_step, learning_rate))
                         start_time_step = time.time()
 
                         # Visualize
                         if label_type == 'character':
                             print('True            : %s' %
-                                  num2alpha(labels[0]))
+                                  idx2alpha(labels[0]))
                             print('Pred (Training) : <%s' %
-                                  num2alpha(predicted_ids_train[0]))
+                                  idx2alpha(predicted_ids_train[0]))
                             print('Pred (Inference): <%s' %
-                                  num2alpha(predicted_ids_infer[0]))
+                                  idx2alpha(predicted_ids_infer[0]))
                         else:
                             print('True            : %s' %
-                                  num2phone(labels[0], map_file_path))
+                                  idx2phone(labels[0]))
                             print('Pred (Training) : < %s' %
-                                  num2phone(predicted_ids_train[0], map_file_path))
+                                  idx2phone(predicted_ids_train[0]))
                             print('Pred (Inference): < %s' %
-                                  num2phone(predicted_ids_infer[0], map_file_path))
+                                  idx2phone(predicted_ids_infer[0]))
 
-                        if ler_train >= ler_train_pre:
-                            not_improved_count += 1
-                        else:
-                            not_improved_count = 0
-                        if not_improved_count >= 10:
+                        if ler_train < 0.1:
                             print('Model is Converged.')
                             break
-                        ler_train_pre = ler_train
 
                         # Update learning rate
                         learning_rate = lr_controller.decay_lr(
@@ -224,9 +224,6 @@ class TestAttention(tf.test.TestCase):
                             epoch=step,
                             value=ler_train)
                         feed_dict[learning_rate_pl] = learning_rate
-
-                duration_global = time.time() - start_time_global
-                print('Total time: %.3f sec' % (duration_global))
 
 
 if __name__ == "__main__":
